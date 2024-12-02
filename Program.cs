@@ -1,9 +1,38 @@
 ﻿using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Numerics;
-using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 using Standart.Hash.xxHash;
+
+using var threadPool = new ThreadPool(Environment.ProcessorCount);
+
+var file = args.ElementAtOrDefault(1) ?? GetInput();
+await using var stream = File.OpenRead(file);
+using var reader = new StreamReader(stream);
+
+var strCount = int.Parse(await reader.ReadLineAsync());
+var strs = new U8String[strCount];
+
+for (var i = 0; i < strCount; i++) {
+    var line = await reader.ReadLineAsync();
+    strs[i] = new(line);
+}
+
+var k = 0;
+U8String? str = null;
+var time = DateTimeOffset.UtcNow;
+
+do {
+    k++;
+    Console.WriteLine($"Trying {k}");
+} while ((str = Solve(strs, k)) == null);
+
+Console.WriteLine($"{k} {str} {DateTimeOffset.UtcNow - time:g}");
+
+string GetInput() {
+    Console.Write("Please enter file path: ");
+    return Console.ReadLine()!;
+}
 
 U8String ChangeAtIthDifference(U8String a, U8String b, int i) {
     var ret = a.Data.ToArray();
@@ -21,44 +50,42 @@ U8String? Solve(U8String[] strs, int k) {
     ConcurrentBag<(U8String Candidate, int PossibleMutations)> candidates = [(strs[0], k)];
 
     var sleepLock = new object();
-    var threads = 32;
     var sleepers = 0;
     var over = false;
     U8String? result = null;
-    var barrier = new Barrier(threads + 1);
+    var barrier = new Barrier(threadPool.Count + 1);
     var reset = new ManualResetEventSlim(true);
-    foreach (var i in Enumerable.Range(0, threads)
-        .Select(_ => new Thread(() => {
-            while (!over) {
-                if (candidates.TryTake(out var candidate)) {
-                    if (TestCandidate(candidate.Candidate, strs, k, candidate.PossibleMutations)) {
-                        result = candidate.Candidate;
-                        lock (sleepLock) {
-                            over = true;
-                            reset.Set();
-                        }
-                    }
-                    reset.Set();
-                } else {
-                    if (Interlocked.Increment(ref sleepers) == threads) {
-                        lock (sleepLock) {
-                            over = true;
-                            reset.Set();
-                        }
-                    } else {
-                        lock (sleepLock) {
-                            if (!over) {
-                                reset.Reset();
-                            }
-                        }
-                        reset.Wait();
-                        Interlocked.Decrement(ref sleepers);
+    threadPool.Submit(() => {
+        while (!over) {
+            if (candidates.TryTake(out var candidate)) {
+                if (TestCandidate(candidate.Candidate, strs, k, candidate.PossibleMutations)) {
+                    result = candidate.Candidate;
+                    lock (sleepLock) {
+                        over = true;
+                        reset.Set();
                     }
                 }
+                reset.Set();
+            } else {
+                if (Interlocked.Increment(ref sleepers) == threadPool.Count) {
+                    lock (sleepLock) {
+                        over = true;
+                        reset.Set();
+                    }
+                } else {
+                    lock (sleepLock) {
+                        if (!over) {
+                            reset.Reset();
+                        }
+                    }
+                    reset.Wait();
+                    Interlocked.Decrement(ref sleepers);
+                }
             }
+        }
 
-            barrier.SignalAndWait();
-        }))) { i.Start(); }
+        barrier.SignalAndWait();
+    });
 
     barrier.SignalAndWait();
     return result;
@@ -107,34 +134,44 @@ U8String? Solve(U8String[] strs, int k) {
     }
 }
 
-string GetInput() {
-    Console.Write("Please enter file path: ");
-    return Console.ReadLine()!;
+class ThreadPool : IDisposable {
+    private readonly Thread[] _threads;
+    private readonly Barrier _barrier;
+
+    private bool _over;
+    private Action _action;
+
+    public int Count => _threads.Length;
+
+    public ThreadPool(int count) {
+        _threads = new Thread[count];
+        _barrier = new(count + 1);
+        var tp = this;
+        foreach (ref var t in _threads.AsSpan()) {
+            t = new(() => {
+                while (true) {
+                    _barrier.SignalAndWait();
+                    if (tp._over) {
+                        break;
+                    }
+                    tp._action!();
+                }
+            });
+            t.Start();
+        }
+    }
+
+    public void Submit(Action action) {
+        _action = action;
+        _barrier.SignalAndWait();
+    }
+
+    public void Dispose() {
+        _over = true;
+        _barrier.SignalAndWait();
+        _barrier.Dispose();
+    }
 }
-
-var file = args.ElementAtOrDefault(1) ?? GetInput();
-await using var stream = File.OpenRead(file);
-using var reader = new StreamReader(stream);
-
-var strCount = int.Parse(await reader.ReadLineAsync());
-var strs = new U8String[strCount];
-
-for (var i = 0; i < strCount; i++) {
-    var line = await reader.ReadLineAsync();
-    strs[i] = new(line);
-}
-
-var k = 0;
-U8String? str = null;
-var time = DateTimeOffset.UtcNow;
-
-do {
-    k++;
-    Console.WriteLine($"Trying {k}");
-} while ((str = Solve(strs, k)) == null);
-
-Console.WriteLine($"{k} {str} {DateTimeOffset.UtcNow - time:g}");
-Console.ReadLine();
 
 readonly struct U8String : IEquatable<U8String> {
     public const int BYTES_PER_VECTOR = 256 / 8;
