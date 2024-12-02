@@ -94,7 +94,7 @@ U8String? Solve(U8String[] strs, int k) {
             return true;
         }
 
-        if (d > 2 * possibleMutations || possibleMutations == 0) {
+        if (d > k + possibleMutations || possibleMutations == 0) {
             return false;
         }
 
