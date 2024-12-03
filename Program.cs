@@ -4,8 +4,6 @@ using System.Numerics;
 using System.Runtime.Intrinsics.X86;
 using Standart.Hash.xxHash;
 
-using var threadPool = new ThreadPool(Environment.ProcessorCount);
-
 var file = args.ElementAtOrDefault(1) ?? GetInput();
 await using var stream = File.OpenRead(file);
 using var reader = new StreamReader(stream);
@@ -18,16 +16,28 @@ for (var i = 0; i < strCount; i++) {
     strs[i] = new(line);
 }
 
+using var threadPool = new ThreadPool(16);
+
+var times = new List<TimeSpan>();
 var k = 0;
-U8String? str = null;
-var time = DateTimeOffset.UtcNow;
+U8String? str;
+var start = DateTimeOffset.UtcNow;
 
 do {
     k++;
+#if DEBUG
     Console.WriteLine($"Trying {k}");
+#endif
 } while ((str = Solve(strs, k)) == null);
 
-Console.WriteLine($"{k} {str} {DateTimeOffset.UtcNow - time:g}");
+var time = DateTimeOffset.UtcNow - start;
+times.Add(time);
+
+Console.WriteLine($"{k} {str} {time:g}");
+
+var avg = times.Average(x => x.TotalMilliseconds);
+Console.WriteLine(avg);
+Console.WriteLine(Math.Sqrt(times.Sum(x => (x.TotalMilliseconds - avg) * (x.TotalMilliseconds - avg))));
 
 string GetInput() {
     Console.Write("Please enter file path: ");
@@ -46,7 +56,7 @@ U8String ChangeAtIthDifference(U8String a, U8String b, int i) {
 }
 
 U8String? Solve(U8String[] strs, int k) {
-    ConcurrentDictionary<U8String, object?> triedCandidates = [];
+    ConcurrentDictionary<U8String, int> triedCandidates = [];
     ConcurrentBag<(U8String Candidate, int PossibleMutations)> candidates = [(strs[0], k)];
 
     var sleepLock = new object();
@@ -91,10 +101,10 @@ U8String? Solve(U8String[] strs, int k) {
     return result;
 
     unsafe bool TestCandidate(U8String candidate, U8String[] strs, int k, int possibleMutations) {
-        if (triedCandidates.ContainsKey(candidate)) {
+        if (triedCandidates.GetValueOrDefault(candidate, -1) >= possibleMutations) {
             return false;
         }
-        triedCandidates.TryAdd(candidate, null);
+        triedCandidates.AddOrUpdate(candidate, possibleMutations, (_, prevVal) => Math.Max(possibleMutations, prevVal));
 
         U8String maxDiff = default;
         var d = 0;
